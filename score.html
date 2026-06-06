@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>游戏成绩</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #0a0a1a;
+    font-family: "Microsoft YaHei", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    text-align: center;
+    padding: 48px 32px;
+    border: 2px solid rgba(51, 204, 255, 0.3);
+    border-radius: 16px;
+    background: rgba(5, 5, 30, 0.85);
+    box-shadow: 0 0 40px rgba(51, 204, 255, 0.1), inset 0 0 40px rgba(51, 204, 255, 0.03);
+    min-width: 300px;
+    max-width: 90vw;
+  }
+  .label { color: #8899aa; font-size: 14px; letter-spacing: 4px; text-transform: uppercase; margin-bottom: 8px; }
+  .score {
+    font-size: 72px; font-weight: bold;
+    color: #ffffff;
+    text-shadow: 0 0 20px #33ccff, 0 0 40px #33ccff, 0 0 80px #33ccff;
+    line-height: 1.2;
+  }
+  .level { color: #ffcc00; font-size: 18px; margin: 12px 0 24px; }
+  .high-score { color: #8899aa; font-size: 14px; margin-bottom: 32px; }
+  .high-score span { color: #ffcc00; font-weight: bold; }
+  .btn {
+    display: inline-block;
+    padding: 12px 40px;
+    border: 1px solid #33ccff;
+    border-radius: 8px;
+    color: #33ccff;
+    font-size: 18px;
+    text-decoration: none;
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 0 12px rgba(51, 204, 255, 0.2);
+  }
+  .btn:hover { background: rgba(51, 204, 255, 0.1); box-shadow: 0 0 24px rgba(51, 204, 255, 0.4); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="label">最终分数</div>
+  <div class="score" id="scoreDisplay">0</div>
+  <div class="level" id="levelDisplay">Lv.1</div>
+  <div class="high-score">历史最高: <span id="highScoreDisplay">0</span> (Lv.<span id="highLevelDisplay">1</span>)</div>
+  <a class="btn" href="index.html">再来一局</a>
+</div>
+
+<script>
+(function() {
+  // 从 URL 参数读取本次成绩
+  const params = new URLSearchParams(window.location.search);
+  const score = parseInt(params.get('score') || '0');
+  const level = parseInt(params.get('level') || '1');
+
+  // 从 localStorage 读取历史最高
+  const highScore = parseInt(localStorage.getItem('clicker_high_score') || '0');
+  const highLevel = parseInt(localStorage.getItem('clicker_high_level') || '1');
+
+  document.getElementById('scoreDisplay').textContent = score;
+  document.getElementById('levelDisplay').textContent = 'Lv.' + level;
+  document.getElementById('highScoreDisplay').textContent = highScore;
+  document.getElementById('highLevelDisplay').textContent = highLevel;
+})();
+</script>
+</body>
+</html>

@@ -35,6 +35,8 @@ const CONFIG = {
   DELTA_TIME_CLAMP: 50,       // ms 上限
   TOUCH_TOLERANCE: 10,        // px，移动端 fat finger 容差
   POOL_MAX: 15,               // 对象池最大容量
+  RED_LINE_PCT: 0.10,         // 红线距底部 10%
+  GAME_OVER_DURATION: 1.0,    // 秒
 };
 
 // ==============================
@@ -332,7 +334,48 @@ class LevelUpEffect {
 }
 
 // ==============================
-// 6. 游戏主类
+// 6. "GAME OVER" 结束特效类
+// ==============================
+class GameOverEffect {
+  constructor() {
+    this.age = 0;
+    this.duration = CONFIG.GAME_OVER_DURATION;
+    this.alive = true;
+  }
+
+  update(dt) {
+    this.age += dt;
+    if (this.age >= this.duration) {
+      this.alive = false;
+    }
+  }
+
+  draw(ctx, canvasWidth, canvasHeight) {
+    const progress = this.age / this.duration;
+    // 红色闪烁脉冲
+    const pulse = Math.sin(progress * Math.PI * 4) * 0.3 + 0.7;
+    const alpha = Math.min(1, pulse);
+    ctx.save();
+    // 全屏红色遮罩
+    ctx.fillStyle = 'rgba(255, 0, 0, ' + (alpha * 0.25) + ')';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    // 文字
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#ff0000';
+    ctx.font = 'bold 64px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 40;
+    ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
+    ctx.shadowBlur = 80;
+    ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
+    ctx.restore();
+  }
+}
+
+// ==============================
+// 7. 游戏主类
 // ==============================
 class Game {
   constructor() {
@@ -344,7 +387,10 @@ class Game {
     this.shapes = [];
     this.floatingTexts = [];
     this.levelUpEffect = null;
+    this.gameOverEffect = null;
     this.spawnTimer = 0;
+    this.gameOver = false;
+    this.deadLineY = 0;
     this.running = false;
 
     this.handleResize();
@@ -371,6 +417,8 @@ class Game {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.width = w;
     this.height = h;
+    // 红线位置：距底部 10%
+    this.deadLineY = h * (1 - CONFIG.RED_LINE_PCT);
 
     // resize 后修正所有图形的 x 坐标，防止越界
     if (this.shapes) {
@@ -431,6 +479,18 @@ class Game {
     }
   }
 
+  // ---- 游戏结束 ----
+  endGame() {
+    this.gameOver = true;
+    this.gameOverEffect = new GameOverEffect();
+    // 存最高分到 localStorage
+    const prev = parseInt(localStorage.getItem('clicker_high_score') || '0');
+    if (this.score > prev) {
+      localStorage.setItem('clicker_high_score', this.score);
+      localStorage.setItem('clicker_high_level', this.level);
+    }
+  }
+
   // ---- 图形生成 ----
   spawnShape() {
     if (this.shapes.length >= getMaxShapes(this.level)) return;
@@ -462,6 +522,36 @@ class Game {
     }
     ctx.stroke();
     ctx.shadowBlur = 0;
+  }
+
+  // ---- 底部红线绘制 ----
+  drawDeadLine(ctx) {
+    const y = this.deadLineY;
+    // 多层红色辉光
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 15;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(this.width, y);
+    ctx.stroke();
+    // 外层大辉光
+    ctx.shadowBlur = 30;
+    ctx.globalAlpha = 0.5;
+    ctx.stroke();
+    // 虚线节奏线
+    ctx.shadowBlur = 8;
+    ctx.globalAlpha = 0.3;
+    ctx.setLineDash([20, 60]);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(this.width, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
   }
 
   // ---- HUD 顶栏绘制 ----
@@ -523,10 +613,29 @@ class Game {
     dt = Math.min(dt, CONFIG.DELTA_TIME_CLAMP);
     const dtSec = dt / 1000;
 
+    // 游戏结束后只更新特效 + 渲染，不再更新图形/生成
+    if (this.gameOver) {
+      this.updateGameOver(dtSec);
+      this.render();
+      requestAnimationFrame((t) => this.gameLoop(t));
+      return;
+    }
+
     this.update(dtSec);
     this.render();
 
     requestAnimationFrame((t) => this.gameLoop(t));
+  }
+
+  // 游戏结束后的特效计时，完成后跳转
+  updateGameOver(dt) {
+    if (this.gameOverEffect) {
+      this.gameOverEffect.update(dt);
+      if (!this.gameOverEffect.alive) {
+        // GAME OVER 动画播完，跳转到分数页
+        window.location.href = 'score.html?score=' + this.score + '&level=' + this.level;
+      }
+    }
   }
 
   update(dt) {
@@ -542,7 +651,12 @@ class Game {
     for (let i = this.shapes.length - 1; i >= 0; i--) {
       const shape = this.shapes[i];
       shape.update(dt);
-      // 超出画布底部则回收
+      // 红线触碰判定（包围盒底部 ≥ 红线 Y）
+      if (shape.y + shape.bounds.radius >= this.deadLineY && !this.gameOver) {
+        this.endGame();
+        return; // 立即停止本轮更新
+      }
+      // 超出画布底部则回收（安全兜底）
       if (shape.isOutOfBounds(this.height)) {
         this.shapes.splice(i, 1);
         this.pool.release(shape);
@@ -572,6 +686,9 @@ class Game {
     // 赛博朋克网格背景
     this.drawBackground(ctx);
 
+    // 底部红色死亡线
+    this.drawDeadLine(ctx);
+
     // 绘制所有图形（后面的在上面）
     for (const shape of this.shapes) {
       shape.draw(ctx);
@@ -587,13 +704,18 @@ class Game {
       this.levelUpEffect.draw(ctx, this.width, this.height);
     }
 
+    // 绘制 GAME OVER 特效
+    if (this.gameOverEffect) {
+      this.gameOverEffect.draw(ctx, this.width, this.height);
+    }
+
     // 绘制 HUD（在所有元素之上）
     this.drawHUD(ctx);
   }
 }
 
 // ==============================
-// 7. 启动
+// 8. 启动
 // ==============================
 const game = new Game();
 game.start();
