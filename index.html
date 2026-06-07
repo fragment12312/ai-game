@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>clicker-game</title>
+<!-- Bootstrap 4 CSS -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css" integrity="sha384-xOolHFLEh07PJGoPkLv1IbcEPTNtaed2xpHsD9ESMhqIYd0nLMwNLD69Npy4HI+N" crossorigin="anonymous">
+<!-- Bootstrap Icons -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a1a; }
@@ -12,6 +16,20 @@
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
+<!-- 暂停按钮 -->
+<button id="pauseBtn" class="btn btn-primary btn-sm position-fixed top-0 left-0 z-10" style="top: 10px; left: 150px; background: rgba(5, 5, 30, 0.85); border-color: #33ccff; color: #33ccff; box-shadow: 0 0 12px rgba(51, 204, 255, 0.3); border-radius: 8px; padding: 4px 12px;">
+  <i class="bi bi-pause-fill" style="font-size: 18px;"></i>
+</button>
+<!-- 暂停遮罩 -->
+<div id="pauseOverlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); z-index: 100; display: flex; align-items: center; justify-content: center;">
+  <button id="resumeBtn" class="btn btn-primary" style="background: rgba(51, 204, 255, 0.2); border-color: #33ccff; color: #33ccff; padding: 20px 30px; border-radius: 50%; box-shadow: 0 0 30px rgba(51, 204, 255, 0.5);">
+    <i class="bi bi-play-fill" style="font-size: 60px;"></i>
+  </button>
+</div>
+<!-- jQuery (Bootstrap 4 需要) -->
+<script src="https://cdn.jsdelivr.net/npm/jquery@3.5.1/dist/jquery.slim.min.js" integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous"></script>
+<!-- Bootstrap 4 Bundle JS (包含 Popper) -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-Fy6S3B9q64WdZWQUiU+q4/2Lc9npb8tCaSX9FK7E8HnRr0Jz8D6OP9dO5Vg3Q9ct" crossorigin="anonymous"></script>
 <script>
 // ==============================
 // 1. 游戏配置
@@ -391,7 +409,9 @@ class Game {
     this.spawnTimer = 0;
     this.gameOver = false;
     this.deadLineY = 0;
+    this.deadLineTimer = 0;  // 红线颜色变化计时器
     this.running = false;
+    this.paused = false;  // 暂停状态
 
     this.handleResize();
     this.bindEvents();
@@ -435,6 +455,21 @@ class Game {
     window.addEventListener('resize', () => this.handleResize());
     this.canvas.addEventListener('click', (e) => this.handleClick(e));
     this.canvas.addEventListener('touchstart', (e) => this.handleTouch(e), { passive: false });
+    
+    // 暂停按钮事件
+    document.getElementById('pauseBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.paused) {
+        this.resume();
+      } else {
+        this.pause();
+      }
+    });
+    
+    // 继续按钮事件
+    document.getElementById('resumeBtn').addEventListener('click', (e) => {
+      this.resume();
+    });
   }
 
   // 获取 canvas 坐标
@@ -527,23 +562,31 @@ class Game {
   // ---- 底部红线绘制 ----
   drawDeadLine(ctx) {
     const y = this.deadLineY;
-    // 多层红色辉光
-    ctx.strokeStyle = '#ff0000';
+    // 计算颜色渐变（1秒周期，黑红交替）
+    const cycle = Math.sin(this.deadLineTimer * Math.PI * 2);  // -1 到 1
+    const intensity = (cycle + 1) / 2;  // 0 到 1，0=黑色，1=红色
+    // 混合黑色和红色
+    const r = Math.floor(255 * intensity);
+    const g = Math.floor(0 * intensity);
+    const b = Math.floor(0 * intensity);
+    const color = `rgb(${r}, ${g}, ${b})`;
+    
     ctx.lineWidth = 2;
-    ctx.shadowColor = '#ff0000';
+    ctx.shadowColor = color;
     ctx.shadowBlur = 15;
-    ctx.globalAlpha = 0.9;
+    ctx.globalAlpha = 0.5 + intensity * 0.4;  // 透明度随颜色变化
+    ctx.strokeStyle = color;
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(this.width, y);
     ctx.stroke();
     // 外层大辉光
     ctx.shadowBlur = 30;
-    ctx.globalAlpha = 0.5;
+    ctx.globalAlpha = 0.2 + intensity * 0.3;
     ctx.stroke();
     // 虚线节奏线
     ctx.shadowBlur = 8;
-    ctx.globalAlpha = 0.3;
+    ctx.globalAlpha = 0.1 + intensity * 0.2;
     ctx.setLineDash([20, 60]);
     ctx.beginPath();
     ctx.moveTo(0, y);
@@ -613,6 +656,13 @@ class Game {
     dt = Math.min(dt, CONFIG.DELTA_TIME_CLAMP);
     const dtSec = dt / 1000;
 
+    // 暂停时只渲染，不更新
+    if (this.paused) {
+      this.render();
+      requestAnimationFrame((t) => this.gameLoop(t));
+      return;
+    }
+
     // 游戏结束后只更新特效 + 渲染，不再更新图形/生成
     if (this.gameOver) {
       this.updateGameOver(dtSec);
@@ -625,6 +675,21 @@ class Game {
     this.render();
 
     requestAnimationFrame((t) => this.gameLoop(t));
+  }
+
+  // ---- 暂停/继续 ----
+  pause() {
+    this.paused = true;
+    document.getElementById('pauseOverlay').style.display = 'flex';
+    // 切换为播放图标
+    document.getElementById('pauseBtn').innerHTML = '<i class="bi bi-play-fill" style="font-size: 18px;"></i>';
+  }
+
+  resume() {
+    this.paused = false;
+    document.getElementById('pauseOverlay').style.display = 'none';
+    // 切换为暂停图标
+    document.getElementById('pauseBtn').innerHTML = '<i class="bi bi-pause-fill" style="font-size: 18px;"></i>';
   }
 
   // 游戏结束后的特效计时，完成后跳转
@@ -678,6 +743,12 @@ class Game {
       if (!this.levelUpEffect.alive) {
         this.levelUpEffect = null;
       }
+    }
+
+    // 更新红线颜色计时器（1秒周期）
+    this.deadLineTimer += dt;
+    if (this.deadLineTimer >= 1.0) {
+      this.deadLineTimer -= 1.0;
     }
   }
 
