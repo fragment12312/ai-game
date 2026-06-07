@@ -1,4 +1,4 @@
-网站入口：[点击开始游戏]([url](https://fragment12312.github.io/ai-game/))
+网站入口：[点击开始游戏](https://fragment12312.github.io/ai-game/)
 
 一个由 AI 辅助构建的高性能 2D 游戏原型，全程采用“提示词工程”驱动开发。
 
