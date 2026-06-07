@@ -12,16 +12,32 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a1a; }
   canvas { display: block; position: absolute; top: 0; left: 0; }
+  /* 暂停按钮响应式定位 */
+  #pauseBtn {
+    left: 130px;
+  }
+  /* 移动端适配：屏幕宽度小于 400px 时 */
+  @media (max-width: 400px) {
+    #pauseBtn {
+      left: 100px;
+    }
+  }
+  /* 更小屏幕 */
+  @media (max-width: 320px) {
+    #pauseBtn {
+      left: 80px;
+    }
+  }
 </style>
 </head>
 <body>
 <canvas id="gameCanvas"></canvas>
 <!-- 暂停按钮 -->
-<button id="pauseBtn" class="btn btn-primary btn-sm position-fixed top-0 left-0 z-10" style="top: 10px; left: 150px; background: rgba(5, 5, 30, 0.85); border-color: #33ccff; color: #33ccff; box-shadow: 0 0 12px rgba(51, 204, 255, 0.3); border-radius: 8px; padding: 4px 12px;">
+<button id="pauseBtn" class="btn btn-primary btn-sm" style="position: fixed; top: 10px; background: rgba(5, 5, 30, 0.85); border-color: #33ccff; color: #33ccff; box-shadow: 0 0 12px rgba(51, 204, 255, 0.3); border-radius: 8px; padding: 4px 12px; z-index: 10;">
   <i class="bi bi-pause-fill" style="font-size: 18px;"></i>
 </button>
 <!-- 暂停遮罩 -->
-<div id="pauseOverlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); z-index: 100; display: flex; align-items: center; justify-content: center;">
+<div id="pauseOverlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); z-index: 100; align-items: center; justify-content: center; display: none;">
   <button id="resumeBtn" class="btn btn-primary" style="background: rgba(51, 204, 255, 0.2); border-color: #33ccff; color: #33ccff; padding: 20px 30px; border-radius: 50%; box-shadow: 0 0 30px rgba(51, 204, 255, 0.5);">
     <i class="bi bi-play-fill" style="font-size: 60px;"></i>
   </button>
