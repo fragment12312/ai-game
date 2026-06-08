@@ -46,6 +46,11 @@
 <script src="https://cdn.jsdelivr.net/npm/jquery@3.5.1/dist/jquery.slim.min.js" integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous"></script>
 <!-- Bootstrap 4 Bundle JS (包含 Popper) -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-Fy6S3B9q64WdZWQUiU+q4/2Lc9npb8tCaSX9FK7E8HnRr0Jz8D6OP9dO5Vg3Q9ct" crossorigin="anonymous"></script>
+
+<!-- ====== 游戏模块（加载顺序不可变） ====== -->
+<script src="renderer.js"></script>
+<script src="input.js"></script>
+
 <script>
 // ==============================
 // 1. 游戏配置
@@ -67,10 +72,34 @@ const CONFIG = {
   FLOAT_TEXT_DURATION: 0.5,   // 秒
   LEVEL_UP_DURATION: 1.0,     // 秒
   DELTA_TIME_CLAMP: 50,       // ms 上限
+  MOUSE_TOLERANCE: 5,         // px，鼠标点击基础容差（原为 0）
   TOUCH_TOLERANCE: 10,        // px，移动端 fat finger 容差
+  LEVEL_TOLERANCE_BOOST: 2,   // Lv4+ 每级额外容差（px），补偿图形缩小
+  HIT_AREA_SCALE: 1.2,        // 判定区扩大倍率（1.0=原始判定，1.2=扩大20%）
   POOL_MAX: 15,               // 对象池最大容量
   RED_LINE_PCT: 0.10,         // 红线距底部 10%
   GAME_OVER_DURATION: 1.0,    // 秒
+  BOOST_FALL_MULTIPLIER: 2.0,   // 清屏加速：下落速度倍率
+  BOOST_DRIFT_MULTIPLIER: 1.5,  // 清屏加速：漂移倍率（Lv3+）
+  BOOST_VAR_SPEED_MULTIPLIER: 1.5, // 清屏加速：变速因子倍率（Lv3+）
+  BOOST_COOLDOWN: 2.0,          // 清屏加速冷却时间（秒），Lv3+
+  BOOST_COOLDOWN_LOW: 0.5,      // 清屏加速冷却时间（秒），Lv1-2
+  EMPTY_SCREEN_MAX: 1.5,        // 空屏兜底最大时间（秒）
+  MAX_BACKUP_SPAWN: 8,          // 兜底暴兵数量上限
+    // ---- 调试开关 ----
+    // 以下所有 [DEBUG_VISUAL] 标记的代码可通过将 DEBUG_CLICK_VISUAL 改为 false 一键关闭。
+    // 如需彻底删除调试代码，搜索 "[DEBUG_VISUAL]" 并注释/删除以下行号范围：
+    //   index.html L89-102    : CONFIG 调试配置项
+    //   index.html L312       : Game 构造函数 debugEffects 初始化
+    //   index.html L486-495   : Game.update() 调试效果老化逻辑
+    //   input.js   L87-199   : generateBladeEffect() / generateSparkEffect()
+    //   input.js   L243-271  : processHit() 效果生成调用
+    //   renderer.js L238-335  : drawBlade() / drawSparks() 函数
+    //   renderer.js L370-379  : renderGame() 遍历 debugEffects 绘制
+  DEBUG_CLICK_VISUAL: true,     // 点击可视化总开关（发布时改为 false）
+  DEBUG_HIT_DURATION: 0.5,      // 命中利刃消失时间（秒），先慢后快
+  DEBUG_MISS_DURATION: 0.5,     // 未命中烟花消失时间（秒），闪烁式
+  DEBUG_MISS_SPREAD: 8,         // 烟花粒子扩散半径（像素）
 };
 
 // ==============================
@@ -136,6 +165,8 @@ class IrregularShape {
     this.bounds = computeBounds(this.points);
     this.cx = this.bounds.cx;
     this.cy = this.bounds.cy;
+    this._hitPoints = null;       // 清除判定区缓存（input.js 下次调用时重算）
+    this._hitPointsScale = null;
     this.alive = true;
   }
 
@@ -224,40 +255,6 @@ function computeBounds(points) {
   };
 }
 
-// 射线法碰撞检测：先将点击点反向旋转到图形的局部坐标系，再做水平射线法
-function isPointInPolygon(px, py, shape) {
-  const cos = Math.cos(-shape.rotation);
-  const sin = Math.sin(-shape.rotation);
-  const dx = px - shape.x;
-  const dy = py - shape.y;
-  const localX = dx * cos - dy * sin;
-  const localY = dx * sin + dy * cos;
-
-  const pts = shape.points;
-  const n = pts.length;
-  let inside = false;
-  for (let i = 0, j = n - 1; i < n; j = i++) {
-    const xi = pts[i].x, yi = pts[i].y;
-    const xj = pts[j].x, yj = pts[j].y;
-    if ((yi > localY) !== (yj > localY)) {
-      const intersectX = xj + ((localY - yj) / (yi - yj)) * (xi - xj);
-      if (localX < intersectX) inside = !inside;
-    }
-  }
-  return inside;
-}
-
-// 容差版：在点击点 ±tolerance 范围内采样检测
-function hitTestWithTolerance(px, py, shape, tolerance) {
-  const offsets = tolerance > 0
-    ? [{x:0,y:0},{x:tolerance,y:0},{x:-tolerance,y:0},{x:0,y:tolerance},{x:0,y:-tolerance}]
-    : [{x:0,y:0}];
-  for (const off of offsets) {
-    if (isPointInPolygon(px + off.x, py + off.y, shape)) return true;
-  }
-  return false;
-}
-
 // ---- 难度参数 ----
 
 function getSpeedScale(level) {
@@ -289,127 +286,9 @@ function getDifficultyParams(level) {
 }
 
 // ==============================
-// 4. "+1" 浮动文字特效类
-// ==============================
-class FloatingText {
-  constructor(x, y, color) {
-    this.x = x;
-    this.y = y;
-    this.color = color;
-    this.age = 0;
-    this.duration = CONFIG.FLOAT_TEXT_DURATION;
-    this.alive = true;
-  }
-
-  update(dt) {
-    this.age += dt;
-    if (this.age >= this.duration) {
-      this.alive = false;
-      return;
-    }
-    // 上飘
-    this.y -= 60 * dt;
-  }
-
-  draw(ctx) {
-    const progress = this.age / this.duration;
-    const alpha = 1 - progress; // 线性淡出
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = this.color;
-    ctx.font = 'bold 28px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowColor = this.color;
-    ctx.shadowBlur = 8;
-    ctx.fillText('+10', this.x, this.y);
-    ctx.restore();
-  }
-}
-
-// ==============================
-// 5. "LEVEL UP!" 升级特效类
-// ==============================
-class LevelUpEffect {
-  constructor() {
-    this.age = 0;
-    this.duration = CONFIG.LEVEL_UP_DURATION;
-    this.alive = true;
-  }
-
-  update(dt) {
-    this.age += dt;
-    if (this.age >= this.duration) {
-      this.alive = false;
-    }
-  }
-
-  draw(ctx, canvasWidth, canvasHeight) {
-    const progress = this.age / this.duration;
-    // 缩放弹入效果
-    const scale = 1 + (1 - Math.min(progress * 2, 1)) * 0.6;
-    const alpha = progress < 0.7 ? 1 : 1 - (progress - 0.7) / 0.3;
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.translate(canvasWidth / 2, canvasHeight / 2);
-    ctx.scale(scale, scale);
-    ctx.fillStyle = '#ffcc00';
-    ctx.font = 'bold 56px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowColor = '#ffcc00';
-    ctx.shadowBlur = 30;
-    ctx.fillText('LEVEL UP!', 0, 0);
-    // 第二层辉光
-    ctx.shadowBlur = 60;
-    ctx.fillText('LEVEL UP!', 0, 0);
-    ctx.restore();
-  }
-}
-
-// ==============================
-// 6. "GAME OVER" 结束特效类
-// ==============================
-class GameOverEffect {
-  constructor() {
-    this.age = 0;
-    this.duration = CONFIG.GAME_OVER_DURATION;
-    this.alive = true;
-  }
-
-  update(dt) {
-    this.age += dt;
-    if (this.age >= this.duration) {
-      this.alive = false;
-    }
-  }
-
-  draw(ctx, canvasWidth, canvasHeight) {
-    const progress = this.age / this.duration;
-    // 红色闪烁脉冲
-    const pulse = Math.sin(progress * Math.PI * 4) * 0.3 + 0.7;
-    const alpha = Math.min(1, pulse);
-    ctx.save();
-    // 全屏红色遮罩
-    ctx.fillStyle = 'rgba(255, 0, 0, ' + (alpha * 0.25) + ')';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-    // 文字
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#ff0000';
-    ctx.font = 'bold 64px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowColor = '#ff0000';
-    ctx.shadowBlur = 40;
-    ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
-    ctx.shadowBlur = 80;
-    ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
-    ctx.restore();
-  }
-}
-
-// ==============================
-// 7. 游戏主类
+// 4. 游戏主类（编排层）
+// 只负责：初始化、游戏循环、更新逻辑
+// 输入 → input.js  渲染 → renderer.js
 // ==============================
 class Game {
   constructor() {
@@ -425,12 +304,16 @@ class Game {
     this.spawnTimer = 0;
     this.gameOver = false;
     this.deadLineY = 0;
-    this.deadLineTimer = 0;  // 红线颜色变化计时器
+    this.deadLineTimer = 0;
     this.running = false;
-    this.paused = false;  // 暂停状态
+    this.paused = false;
+    this.boostNextSpawn = false;
+    this.boostCooldownRemaining = 0;
+    this.emptyScreenTimer = 0;
+    this.debugEffects = [];            // 调试：点击效果记录
 
     this.handleResize();
-    this.bindEvents();
+    bindInputEvents(this);  // 输入事件由 input.js 绑定
   }
 
   // ---- Canvas 自适应 ----
@@ -461,71 +344,7 @@ class Game {
       for (const shape of this.shapes) {
         const margin = CONFIG.AVG_RADIUS + 20;
         shape.x = Math.max(margin, Math.min(shape.x, w - margin));
-        shape.y = Math.min(shape.y, h + 100); // 防止瞬移到底部很远
-      }
-    }
-  }
-
-  // ---- 事件绑定 ----
-  bindEvents() {
-    window.addEventListener('resize', () => this.handleResize());
-    this.canvas.addEventListener('click', (e) => this.handleClick(e));
-    this.canvas.addEventListener('touchstart', (e) => this.handleTouch(e), { passive: false });
-    
-    // 暂停按钮事件
-    document.getElementById('pauseBtn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (this.paused) {
-        this.resume();
-      } else {
-        this.pause();
-      }
-    });
-    
-    // 继续按钮事件
-    document.getElementById('resumeBtn').addEventListener('click', (e) => {
-      this.resume();
-    });
-  }
-
-  // 获取 canvas 坐标
-  getCanvasPos(e) {
-    const rect = this.canvas.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
-  }
-
-  handleClick(e) {
-    const pos = this.getCanvasPos(e);
-    this.processHit(pos.x, pos.y, 0);
-  }
-
-  handleTouch(e) {
-    e.preventDefault();
-    if (e.touches.length > 0) {
-      const pos = this.getCanvasPos(e.touches[0]);
-      this.processHit(pos.x, pos.y, CONFIG.TOUCH_TOLERANCE);
-    }
-  }
-
-  // 命中检测：从上层到下层遍历，命中第一个即停
-  processHit(x, y, tolerance) {
-    for (let i = this.shapes.length - 1; i >= 0; i--) {
-      const shape = this.shapes[i];
-      if (hitTestWithTolerance(x, y, shape, tolerance)) {
-        // 命中！
-        this.score += 10;
-        this.floatingTexts.push(new FloatingText(x, y, shape.color));
-        this.shapes.splice(i, 1);
-        this.pool.release(shape);
-        // 每 100 分升级
-        if (this.score % 100 === 0) {
-          this.level++;
-          this.levelUpEffect = new LevelUpEffect();
-        }
-        return; // 只命中一个
+        shape.y = Math.min(shape.y, h + 100);
       }
     }
   }
@@ -546,110 +365,17 @@ class Game {
   spawnShape() {
     if (this.shapes.length >= getMaxShapes(this.level)) return;
     const shape = this.pool.acquire(this.level);
+    // 清屏加速：下一个生成的图形加速下落
+    if (this.boostNextSpawn) {
+      shape.fallSpeed *= CONFIG.BOOST_FALL_MULTIPLIER;
+      if (this.level >= 3) {
+        shape.driftSpeed *= CONFIG.BOOST_DRIFT_MULTIPLIER;
+        shape.varSpeedFactor *= CONFIG.BOOST_VAR_SPEED_MULTIPLIER;
+      }
+      this.boostNextSpawn = false;
+      this.boostCooldownRemaining = this.level >= 3 ? CONFIG.BOOST_COOLDOWN : CONFIG.BOOST_COOLDOWN_LOW;
+    }
     this.shapes.push(shape);
-  }
-
-  // ---- 赛博朋克网格背景 ----
-  drawBackground(ctx) {
-    ctx.fillStyle = CONFIG.CANVAS_BG;
-    ctx.fillRect(0, 0, this.width, this.height);
-
-    // 透视网格线（微微发光）
-    const gridSize = 50;
-    ctx.strokeStyle = 'rgba(51, 204, 255, 0.06)';
-    ctx.lineWidth = 0.5;
-    ctx.shadowColor = 'rgba(51, 204, 255, 0.15)';
-    ctx.shadowBlur = 1;
-    ctx.beginPath();
-    // 垂直线
-    for (let x = gridSize; x < this.width; x += gridSize) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, this.height);
-    }
-    // 水平线
-    for (let y = gridSize; y < this.height; y += gridSize) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(this.width, y);
-    }
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-  }
-
-  // ---- 底部红线绘制 ----
-  drawDeadLine(ctx) {
-    const y = this.deadLineY;
-    // 计算颜色渐变（1秒周期，黑红交替）
-    const cycle = Math.sin(this.deadLineTimer * Math.PI * 2);  // -1 到 1
-    const intensity = (cycle + 1) / 2;  // 0 到 1，0=黑色，1=红色
-    // 混合黑色和红色
-    const r = Math.floor(255 * intensity);
-    const g = Math.floor(0 * intensity);
-    const b = Math.floor(0 * intensity);
-    const color = `rgb(${r}, ${g}, ${b})`;
-    
-    ctx.lineWidth = 2;
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 15;
-    ctx.globalAlpha = 0.5 + intensity * 0.4;  // 透明度随颜色变化
-    ctx.strokeStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(this.width, y);
-    ctx.stroke();
-    // 外层大辉光
-    ctx.shadowBlur = 30;
-    ctx.globalAlpha = 0.2 + intensity * 0.3;
-    ctx.stroke();
-    // 虚线节奏线
-    ctx.shadowBlur = 8;
-    ctx.globalAlpha = 0.1 + intensity * 0.2;
-    ctx.setLineDash([20, 60]);
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(this.width, y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.shadowBlur = 0;
-    ctx.globalAlpha = 1;
-  }
-
-  // ---- HUD 顶栏绘制 ----
-  drawHUD(ctx) {
-    const pointsToNext = 100 - (this.score % 100);
-    const barHeight = 52;
-    const padding = 16;
-
-    // 半透明背景条
-    ctx.fillStyle = 'rgba(5, 5, 30, 0.75)';
-    ctx.fillRect(0, 0, this.width, barHeight);
-    // 底部亮线
-    ctx.strokeStyle = '#33ccff';
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.6;
-    ctx.beginPath();
-    ctx.moveTo(0, barHeight);
-    ctx.lineTo(this.width, barHeight);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-
-    // 左侧：分数
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 22px "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.shadowColor = '#33ccff';
-    ctx.shadowBlur = 6;
-    ctx.fillText('分数: ' + this.score, padding, barHeight / 2 - 4);
-
-    // 右侧：等级 + 距下一级
-    ctx.shadowColor = '#ffcc00';
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = '#ffcc00';
-    ctx.textAlign = 'right';
-    const levelText = 'Lv.' + this.level;
-    const nextText = '下一级: ' + pointsToNext + ' 分';
-    ctx.fillText(levelText + '  |  ' + nextText, this.width - padding, barHeight / 2 - 4);
-    ctx.shadowBlur = 0;
   }
 
   // ---- 游戏循环 ----
@@ -674,7 +400,7 @@ class Game {
 
     // 暂停时只渲染，不更新
     if (this.paused) {
-      this.render();
+      renderGame(this);
       requestAnimationFrame((t) => this.gameLoop(t));
       return;
     }
@@ -682,13 +408,13 @@ class Game {
     // 游戏结束后只更新特效 + 渲染，不再更新图形/生成
     if (this.gameOver) {
       this.updateGameOver(dtSec);
-      this.render();
+      renderGame(this);
       requestAnimationFrame((t) => this.gameLoop(t));
       return;
     }
 
     this.update(dtSec);
-    this.render();
+    renderGame(this);
 
     requestAnimationFrame((t) => this.gameLoop(t));
   }
@@ -697,14 +423,12 @@ class Game {
   pause() {
     this.paused = true;
     document.getElementById('pauseOverlay').style.display = 'flex';
-    // 切换为播放图标
     document.getElementById('pauseBtn').innerHTML = '<i class="bi bi-play-fill" style="font-size: 18px;"></i>';
   }
 
   resume() {
     this.paused = false;
     document.getElementById('pauseOverlay').style.display = 'none';
-    // 切换为暂停图标
     document.getElementById('pauseBtn').innerHTML = '<i class="bi bi-pause-fill" style="font-size: 18px;"></i>';
   }
 
@@ -713,7 +437,6 @@ class Game {
     if (this.gameOverEffect) {
       this.gameOverEffect.update(dt);
       if (!this.gameOverEffect.alive) {
-        // GAME OVER 动画播完，跳转到分数页
         window.location.href = 'score.html?score=' + this.score + '&level=' + this.level;
       }
     }
@@ -735,9 +458,9 @@ class Game {
       // 红线触碰判定（包围盒底部 ≥ 红线 Y）
       if (shape.y + shape.bounds.radius >= this.deadLineY && !this.gameOver) {
         this.endGame();
-        return; // 立即停止本轮更新
+        return;
       }
-      // 超出画布底部则回收（安全兜底）
+      // 超出画布底部则回收
       if (shape.isOutOfBounds(this.height)) {
         this.shapes.splice(i, 1);
         this.pool.release(shape);
@@ -761,95 +484,50 @@ class Game {
       }
     }
 
+    // 调试效果老化（仅在调试模式开启时执行，关闭时零开销）
+    if (CONFIG.DEBUG_CLICK_VISUAL && this.debugEffects.length > 0) {
+      for (let i = this.debugEffects.length - 1; i >= 0; i--) {
+        this.debugEffects[i].age += dt;
+        const maxAge = this.debugEffects[i].type === "blade" ? CONFIG.DEBUG_HIT_DURATION : CONFIG.DEBUG_MISS_DURATION;
+        if (this.debugEffects[i].age >= maxAge) {
+          this.debugEffects.splice(i, 1);
+        }
+      }
+    }
+
+    // 清屏加速冷却倒计时
+    if (this.boostCooldownRemaining > 0) {
+      this.boostCooldownRemaining -= dt;
+      if (this.boostCooldownRemaining < 0) this.boostCooldownRemaining = 0;
+    }
+
+    // 空屏检测：屏幕无图形时计时，超过上限强制暴兵
+    if (this.shapes.length === 0) {
+      this.emptyScreenTimer += dt;
+      if (this.emptyScreenTimer >= CONFIG.EMPTY_SCREEN_MAX) {
+        const count = Math.min(this.level * 2, getMaxShapes(this.level), CONFIG.MAX_BACKUP_SPAWN);
+        for (let i = 0; i < count; i++) {
+          this.spawnShape();
+        }
+        this.emptyScreenTimer = 0;
+      }
+    } else {
+      this.emptyScreenTimer = 0;
+    }
+
     // 更新红线颜色计时器（1秒周期）
     this.deadLineTimer += dt;
     if (this.deadLineTimer >= 1.0) {
       this.deadLineTimer -= 1.0;
     }
   }
-
-  render() {
-    const ctx = this.ctx;
-    // 赛博朋克网格背景
-    this.drawBackground(ctx);
-
-    // 底部红色死亡线
-    this.drawDeadLine(ctx);
-
-    // 绘制所有图形（后面的在上面）
-    for (const shape of this.shapes) {
-      shape.draw(ctx);
-    }
-
-    // 绘制浮动文字
-    for (const ft of this.floatingTexts) {
-      ft.draw(ctx);
-    }
-
-    // 绘制 LEVEL UP 特效
-    if (this.levelUpEffect) {
-      this.levelUpEffect.draw(ctx, this.width, this.height);
-    }
-
-    // 绘制 GAME OVER 特效
-    if (this.gameOverEffect) {
-      this.gameOverEffect.draw(ctx, this.width, this.height);
-    }
-
-    // 绘制 HUD（在所有元素之上）
-    this.drawHUD(ctx);
-  }
 }
 
 // ==============================
-// 8. 启动
+// 5. 启动
 // ==============================
 const game = new Game();
 game.start();
 </script>
-
-<!--
-╔══════════════════════════════════════════════════════════════╗
-║              最终自检结果表（Evaluate Checklist）            ║
-╠══════════════════════════════════════════════════════════════╣
-║  功能完整性                                                  ║
-║  ✅ 不规则多边形从顶部落下至底部                              ║
-║  ✅ 点击图形能准确检测命中（射线法 + 旋转后多边形）            ║
-║  ✅ 命中后分数+1且图形消失（对象池回收）                       ║
-║  ✅ 每100分触发难度升级                                       ║
-║  ✅ 难度升级后掉落速度/数量/尺寸有明显变化                     ║
-║  ✅ "+1"浮动文字动画正常播放（0.5s 上飘淡出）                 ║
-║  ✅ "LEVEL UP!"升级动画正常播放（1s 缩放+辉光）               ║
-║  ✅ 移动端触摸事件可正常使用（preventDefault + 容差）         ║
-║  ✅ 窗口缩放后画布自适应（DPR + 图形位置修正）                ║
-╠══════════════════════════════════════════════════════════════╣
-║  代码质量                                                    ║
-║  ✅ 无第三方依赖，纯原生实现                                  ║
-║  ✅ delta-time 且做了 clamp（上限 50ms）                     ║
-║  ✅ 图形对象池已实现（池上限 15，release 时判断上限）          ║
-║  ✅ 代码模块分区清晰，中文注释完整                            ║
-║  ✅ 碰撞检测使用射线法而非 isPointInPath                     ║
-╠══════════════════════════════════════════════════════════════╣
-║  视觉风格                                                    ║
-║  ✅ 背景色 #0a0a1a + 透视网格                                ║
-║  ✅ 图形使用 neon 色板（12 色，s≥60%, l≥50%）               ║
-║  ✅ 阴影发光：shadowBlur=12 + 双层辉光 (alpha 0.9/0.4)       ║
-╠══════════════════════════════════════════════════════════════╣
-║  性能                                                        ║
-║  ✅ 稳定 60fps (requestAnimationFrame + delta-time)          ║
-║  ✅ dt clamp 防止标签页切换尖刺（上限 50ms）                  ║
-║  ✅ 对象池复用避免频繁 GC                                     ║
-╠══════════════════════════════════════════════════════════════╣
-║  边界情况                                                    ║
-║  ✅ 重叠图形只命中 z-order 最上层                              ║
-║  ✅ 命中后图形消失，不重复计分                                 ║
-║  ✅ 标签页切回后 dt clamp 防瞬移                              ║
-║  ✅ DPR > 1 高分屏坐标转换正确                                ║
-║  ✅ 最小 320px 宽度保护                                       ║
-║  ✅ resize 后图形坐标修正                                     ║
-║  ✅ 触摸事件 preventDefault 防页面滚动                        ║
-║  ✅ Lv10+ 参数按外推规则稳定                                   ║
-╚══════════════════════════════════════════════════════════════╝
--->
 </body>
 </html>
