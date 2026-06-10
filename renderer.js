@@ -97,37 +97,39 @@ class LevelUpEffect {
 // ---- "GAME OVER" 结束特效类 ----
 class GameOverEffect {
   constructor() {
+    this.startTime = performance.now();
     this.age = 0;
-    this.duration = CONFIG.GAME_OVER_DURATION;
+    this.duration = CONFIG.GAME_OVER_DURATION; // 1.0 秒
     this.alive = true;
   }
 
-  update(dt) {
-    this.age += dt;
+  update() {
+    // 用 performance.now() 追踪真实墙钟时间，避免 dt clamp
+    // 导致低性能设备上效果被拉长（移动端 shadowBlur 极慢）
+    const elapsed = (performance.now() - this.startTime) / 1000;
+    this.age = elapsed;
     if (this.age >= this.duration) {
       this.alive = false;
     }
   }
 
   draw(ctx, canvasWidth, canvasHeight) {
-    const progress = this.age / this.duration;
-    // 红色闪烁脉冲
-    const pulse = Math.sin(progress * Math.PI * 4) * 0.3 + 0.7;
+    const progress = Math.min(1, this.age / this.duration);
+    // 红色闪烁脉冲，在1秒内完成4次闪烁
+    const pulse = Math.sin(progress * Math.PI * 8) * 0.3 + 0.7;
     const alpha = Math.min(1, pulse);
     ctx.save();
     // 全屏红色遮罩
     ctx.fillStyle = 'rgba(255, 0, 0, ' + (alpha * 0.25) + ')';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-    // 文字
+    // 文字 — 只用一层 shadowBlur 减少移动端 GPU 压力
     ctx.globalAlpha = alpha;
     ctx.fillStyle = '#ff0000';
     ctx.font = 'bold 64px "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.shadowColor = '#ff0000';
-    ctx.shadowBlur = 40;
-    ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
-    ctx.shadowBlur = 80;
+    ctx.shadowBlur = 30;
     ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
     ctx.restore();
   }
